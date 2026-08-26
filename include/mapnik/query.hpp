@@ -28,6 +28,7 @@
 #include <mapnik/attribute.hpp>
 
 // stl
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -38,6 +39,7 @@ class query
 {
   public:
     using resolution_type = std::tuple<double, double>;
+    using property_filter_type = std::map<std::string, std::set<std::string>>;
 
     query(box2d<double> const& bbox,
           resolution_type const& _resolution,
@@ -49,7 +51,8 @@ class query
           filter_factor_(1.0),
           unbuffered_bbox_(unbuffered_bbox),
           names_(),
-          vars_()
+          vars_(),
+          property_filter_()
     {}
 
     query(box2d<double> const& bbox, resolution_type const& _resolution, double _scale_denominator = 1.0)
@@ -59,7 +62,8 @@ class query
           filter_factor_(1.0),
           unbuffered_bbox_(bbox),
           names_(),
-          vars_()
+          vars_(),
+          property_filter_()
     {}
 
     query(box2d<double> const& bbox)
@@ -69,7 +73,8 @@ class query
           filter_factor_(1.0),
           unbuffered_bbox_(bbox),
           names_(),
-          vars_()
+          vars_(),
+          property_filter_()
     {}
 
     query(query const& other)
@@ -79,7 +84,8 @@ class query
           filter_factor_(other.filter_factor_),
           unbuffered_bbox_(other.unbuffered_bbox_),
           names_(other.names_),
-          vars_(other.vars_)
+          vars_(other.vars_),
+          property_filter_(other.property_filter_)
     {}
 
     query& operator=(query const& other)
@@ -93,6 +99,7 @@ class query
         unbuffered_bbox_ = other.unbuffered_bbox_;
         names_ = other.names_;
         vars_ = other.vars_;
+        property_filter_ = other.property_filter_;
         return *this;
     }
 
@@ -116,6 +123,15 @@ class query
 
     std::set<std::string> const& property_names() const { return names_; }
 
+    void add_property_filter_value(std::string const& name, std::string const& value)
+    {
+        property_filter_[name].insert(value);
+    }
+
+    // A datasource may use this conservative hint to omit features that cannot
+    // match any active rule. Ignoring the hint is always valid.
+    property_filter_type const& property_filter() const { return property_filter_; }
+
     void set_variables(attributes const& vars) { vars_ = vars; }
 
     attributes const& variables() const { return vars_; }
@@ -128,6 +144,7 @@ class query
     box2d<double> unbuffered_bbox_;
     std::set<std::string> names_;
     attributes vars_;
+    property_filter_type property_filter_;
 };
 
 } // namespace mapnik

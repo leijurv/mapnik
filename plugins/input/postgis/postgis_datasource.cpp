@@ -61,6 +61,45 @@ using mapnik::sql_utils::identifier;
 using mapnik::sql_utils::literal;
 using std::shared_ptr;
 
+namespace {
+
+void append_property_filter(std::ostream& output, mapnik::query::property_filter_type const& filter)
+{
+    output << '(';
+    bool first_property = true;
+    for (auto const& [name, values] : filter)
+    {
+        if (!first_property)
+        {
+            output << " OR ";
+        }
+        first_property = false;
+        output << identifier(name);
+        if (values.size() == 1)
+        {
+            output << '=' << literal(*values.begin());
+        }
+        else
+        {
+            output << " IN (";
+            bool first_value = true;
+            for (std::string const& value : values)
+            {
+                if (!first_value)
+                {
+                    output << ',';
+                }
+                first_value = false;
+                output << literal(value);
+            }
+            output << ')';
+        }
+    }
+    output << ')';
+}
+
+} // namespace
+
 postgis_datasource::postgis_datasource(parameters const& params)
     : datasource(params),
       table_(*params.get<std::string>("table", "")),
@@ -873,7 +912,18 @@ featureset_ptr postgis_datasource::features_with_context(query const& q, process
         std::string table_with_bbox =
           populate_tokens(table_, scale_denom, box, q.get_unbuffered_bbox(), px_gw, px_gh, q.variables());
 
-        s << " FROM " << table_with_bbox;
+        mapnik::query::property_filter_type const& property_filter = q.property_filter();
+        if (property_filter.empty() || row_limit_ > 0)
+        {
+            s << " FROM " << table_with_bbox;
+        }
+        else
+        {
+            // OFFSET 0 keeps the datasource's row order while allowing the outer
+            // query to skip geometry serialization for rejected features.
+            s << " FROM (SELECT * FROM " << table_with_bbox << " OFFSET 0) AS mapnik_filtered WHERE ";
+            append_property_filter(s, property_filter);
+        }
 
         if (row_limit_ > 0)
         {

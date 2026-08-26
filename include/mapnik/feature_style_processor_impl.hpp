@@ -365,6 +365,8 @@ void feature_style_processor<Processor>::prepare_layer(layer_rendering_material&
 
     std::vector<rule_cache>& rule_caches = mat.rule_caches_;
     attribute_collector collector(names);
+    query::property_filter_type property_filter;
+    bool property_filter_safe = lay.group_by().empty() && !lay.sort_by();
 
     // iterate through all named styles collecting active styles and attribute names
     for (std::string const& style_name : style_names)
@@ -392,6 +394,21 @@ void feature_style_processor<Processor>::prepare_layer(layer_rendering_material&
         }
         if (active_rules)
         {
+            if (!rc.get_else_rules().empty() || !rc.get_rules_without_precondition().empty())
+            {
+                property_filter_safe = false;
+            }
+            else
+            {
+                for (rule_cache::precondition_group const& group : rc.get_precondition_groups())
+                {
+                    std::set<std::string>& values = property_filter[group.name];
+                    for (auto const& entry : group.rules)
+                    {
+                        values.insert(entry.first.to_string());
+                    }
+                }
+            }
             rule_caches.push_back(std::move(rc));
             active_styles.push_back(&style->get());
         }
@@ -426,6 +443,16 @@ void feature_style_processor<Processor>::prepare_layer(layer_rendering_material&
         }
     }
     q.set_filter_factor(collector.get_filter_factor());
+    if (property_filter_safe)
+    {
+        for (auto const& [name, values] : property_filter)
+        {
+            for (std::string const& value : values)
+            {
+                q.add_property_filter_value(name, value);
+            }
+        }
+    }
 
     // Also query the group-by and sort-by attribute
     std::string const& group_by = lay.group_by();

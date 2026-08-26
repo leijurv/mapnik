@@ -312,6 +312,28 @@ TEST_CASE("postgis")
             REQUIRE(ext.maxy() == 4);
         }
 
+        SECTION("Postgis applies query property filters")
+        {
+            mapnik::parameters params(base_params);
+            params["table"] = "(SELECT * FROM public.test WHERE geom && !bbox! ORDER BY gid DESC) as data";
+            auto ds = mapnik::datasource_cache::instance().create(params);
+            REQUIRE(ds != nullptr);
+
+            mapnik::query qry(ds->envelope());
+            qry.add_property_name("col_text");
+            qry.add_property_filter_value("col_text", "I am a point");
+            qry.add_property_filter_value("col_text", "I, too, am a point!");
+
+            auto featureset = ds->features(qry);
+            auto feature = featureset->next();
+            REQUIRE(feature != nullptr);
+            CHECK(feature->get("col_text").to_string() == "I, too, am a point!");
+            feature = featureset->next();
+            REQUIRE(feature != nullptr);
+            CHECK(feature->get("col_text").to_string() == "I am a point");
+            CHECK(featureset->next() == nullptr);
+        }
+
         SECTION("Postgis !unbuffered_bbox! yields the pre-buffer extent")
         {
             mapnik::parameters params(base_params);

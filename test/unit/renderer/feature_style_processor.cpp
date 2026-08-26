@@ -107,6 +107,7 @@ class unbuffered_bbox_datasource : public mapnik::memory_datasource
     {
         last_bbox_ = q.get_bbox();
         last_unbuffered_bbox_ = q.get_unbuffered_bbox();
+        last_property_filter_ = q.property_filter();
         ++query_count_;
         return mapnik::memory_datasource::features(q);
     }
@@ -114,6 +115,7 @@ class unbuffered_bbox_datasource : public mapnik::memory_datasource
     unsigned query_count() const { return query_count_; }
     mapnik::box2d<double> const& last_bbox() const { return last_bbox_; }
     mapnik::box2d<double> const& last_unbuffered_bbox() const { return last_unbuffered_bbox_; }
+    mapnik::query::property_filter_type const& last_property_filter() const { return last_property_filter_; }
 
   private:
     static mapnik::parameters prepare_params()
@@ -125,6 +127,7 @@ class unbuffered_bbox_datasource : public mapnik::memory_datasource
 
     mutable mapnik::box2d<double> last_bbox_;
     mutable mapnik::box2d<double> last_unbuffered_bbox_;
+    mutable mapnik::query::property_filter_type last_property_filter_;
     mutable unsigned query_count_;
 };
 
@@ -422,5 +425,77 @@ TEST_CASE("feature_style_processor")
         CHECK(result.style_geometry_counts[1] == 1);
         CHECK(result.style_geometry_counts[2] == 4);
         CHECK(result.style_geometry_counts[3] == 6);
+    }
+
+    SECTION("query includes safe rule preconditions")
+    {
+        auto datasource = std::make_shared<unbuffered_bbox_datasource>();
+        auto context = std::make_shared<mapnik::context_type>();
+        auto feature = mapnik::feature_factory::create(context, 1);
+        feature->put_new("kind", mapnik::value_unicode_string("a"));
+        feature->put_new("rank", 20);
+        feature->put_new("category", mapnik::value_unicode_string("b"));
+        feature->set_geometry(mapnik::geometry::point<double>(1, 1));
+        datasource->push(feature);
+
+        mapnik::feature_type_style style;
+        mapnik::rule first;
+        first.set_filter(mapnik::parse_expression("[kind] = 'a' and [rank] > 10"));
+        first.append(mapnik::point_symbolizer());
+        style.add_rule(std::move(first));
+        mapnik::rule second;
+        second.set_filter(mapnik::parse_expression("[category] = 'b'"));
+        second.append(mapnik::point_symbolizer());
+        style.add_rule(std::move(second));
+
+        mapnik::Map map(256, 256);
+        map.insert_style("points", std::move(style));
+        mapnik::layer layer("layer");
+        layer.set_datasource(datasource);
+        layer.add_style("points");
+        map.add_layer(layer);
+        map.zoom_to_box(mapnik::box2d<double>(0, 0, 2, 2));
+
+        rendering_result result;
+        test_renderer renderer(map, result);
+        renderer.apply();
+
+        mapnik::query::property_filter_type const expected = {{"category", {"b"}}, {"kind", {"a"}}};
+        CHECK(datasource->last_property_filter() == expected);
+    }
+
+    SECTION("query omits rule preconditions when they cannot cover every rule")
+    {
+        auto datasource = std::make_shared<unbuffered_bbox_datasource>();
+        auto context = std::make_shared<mapnik::context_type>();
+        auto feature = mapnik::feature_factory::create(context, 1);
+        feature->put_new("kind", mapnik::value_unicode_string("a"));
+        feature->put_new("rank", 20);
+        feature->set_geometry(mapnik::geometry::point<double>(1, 1));
+        datasource->push(feature);
+
+        mapnik::feature_type_style style;
+        mapnik::rule first;
+        first.set_filter(mapnik::parse_expression("[kind] = 'a'"));
+        first.append(mapnik::point_symbolizer());
+        style.add_rule(std::move(first));
+        mapnik::rule second;
+        second.set_filter(mapnik::parse_expression("[rank] > 10"));
+        second.append(mapnik::point_symbolizer());
+        style.add_rule(std::move(second));
+
+        mapnik::Map map(256, 256);
+        map.insert_style("points", std::move(style));
+        mapnik::layer layer("layer");
+        layer.set_datasource(datasource);
+        layer.add_style("points");
+        map.add_layer(layer);
+        map.zoom_to_box(mapnik::box2d<double>(0, 0, 2, 2));
+
+        rendering_result result;
+        test_renderer renderer(map, result);
+        renderer.apply();
+
+        CHECK(datasource->last_property_filter().empty());
     }
 }
