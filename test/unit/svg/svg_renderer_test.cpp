@@ -23,6 +23,8 @@
 #include "catch.hpp"
 
 #include <mapnik/debug.hpp>
+#include <mapnik/agg_rasterizer.hpp>
+#include <mapnik/agg_render_marker.hpp>
 #include <mapnik/marker.hpp>
 #include <mapnik/marker_cache.hpp>
 #include <mapnik/image_util.hpp>
@@ -145,6 +147,72 @@ TEST_CASE("SVG renderer")
         auto image1 = render_svg(octocat_inline, scale_factor);
         auto image2 = render_svg(octocat_css, scale_factor);
         REQUIRE(equal(image1, image2));
+    }
+}
+
+TEST_CASE("SVG marker coverage is independent of the image boundary")
+{
+    auto render = [](int padding, double opacity, double gamma) {
+        using pixfmt = agg::pixfmt_custom_blend_rgba<agg::comp_op_adaptor_rgba_pre<agg::rgba8, agg::order_rgba>,
+                                                     agg::rendering_buffer>;
+        using renderer_base = agg::renderer_base<pixfmt>;
+        using renderer_solid = agg::renderer_scanline_aa_solid<renderer_base>;
+
+        mapnik::svg_storage_type storage;
+        mapnik::svg::vertex_stl_adapter<mapnik::svg::svg_path_storage> adapter(storage.source());
+        mapnik::svg_path_adapter path(adapter);
+        mapnik::svg::svg_converter_type converter(path, storage.svg_group());
+        mapnik::svg::svg_parser parser(converter);
+        // Clipping this triangle introduces rounded intersections on both axes.
+        parser.parse_from_string(
+          "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\">"
+          "<path d=\"M13.87109375 23.97265625 L20.4453125 -2.921875 L-4.35546875 2.4453125 Z\" fill=\"white\"/>"
+          "</svg>");
+
+        int const size = 16 + 2 * padding;
+        mapnik::image_rgba8 image(size, size, true, true);
+        agg::rendering_buffer buffer(image.bytes(), size, size, image.row_size());
+        pixfmt pixels(buffer);
+        pixels.comp_op(agg::comp_op_src_over);
+        renderer_base base(pixels);
+        mapnik::rasterizer rasterizer;
+        rasterizer.clip_box(0, 0, size, size);
+        rasterizer.gamma(agg::gamma_power(gamma));
+        mapnik::svg::renderer_agg<mapnik::svg_path_adapter, mapnik::svg_attribute_type, renderer_solid, pixfmt>
+          renderer(path, storage.svg_group());
+        mapnik::render_vector_marker(renderer,
+                                     rasterizer,
+                                     base,
+                                     {0, 0, 32, 32},
+                                     agg::trans_affine_translation(padding, padding),
+                                     opacity,
+                                     true);
+
+        // Subsequent non-marker geometry must still use the original clip box.
+        rasterizer.reset();
+        rasterizer.move_to_d(-4, -4);
+        rasterizer.line_to_d(size + 4, -4);
+        rasterizer.line_to_d(size + 4, size + 4);
+        rasterizer.line_to_d(-4, size + 4);
+        rasterizer.close_polygon();
+        CHECK(rasterizer.min_x() == 0);
+        CHECK(rasterizer.max_x() == size);
+        return image;
+    };
+
+    for (double opacity : {1.0, 0.6})
+    {
+        for (double gamma : {1.0, 0.7})
+        {
+            CAPTURE(opacity, gamma);
+            auto const small = render(0, opacity, gamma);
+            auto const padded = render(32, opacity, gamma);
+            mapnik::image_rgba8 cropped(16, 16, true, true);
+            for (unsigned y = 0; y < 16; ++y)
+                for (unsigned x = 0; x < 16; ++x)
+                    cropped(x, y) = padded(x + 32, y + 32);
+            CHECK(equal(small, cropped));
+        }
     }
 }
 

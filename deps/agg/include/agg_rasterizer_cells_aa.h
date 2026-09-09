@@ -31,6 +31,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 #include <limits>
 #include "agg_math.h"
 #include "agg_array.h"
@@ -69,6 +70,8 @@ namespace agg
         void reset();
         void style(const cell_type& style_cell);
         void line(int x1, int y1, int x2, int y2);
+        void line_clipped(int x1, int y1, int x2, int y2,
+                          const rect_i& clip);
 
         int min_x() const { return m_min_x; }
         int min_y() const { return m_min_y; }
@@ -101,6 +104,8 @@ namespace agg
         void set_curr_cell(int x, int y);
         void add_curr_cell();
         void render_hline(int ey, int x1, int y1, int x2, int y2);
+        void render_hline_clipped(int ey, int x1, int y1, int x2, int y2,
+                                 const rect_i& clip);
         void allocate_block();
         
     private:
@@ -333,6 +338,7 @@ namespace agg
 
             line(x1, y1, cx, cy);
             line(cx, cy, x2, y2);
+            return;
         }
 
         int dy = y2 - y1;
@@ -468,6 +474,156 @@ namespace agg
             }
         }
         render_hline(ey1, x_from, poly_subpixel_scale - first, x2, fy2);
+    }
+
+    //------------------------------------------------------------------------
+    // The edge DDA uses floor division, including for negative slopes.
+    // Keeping its original numerator and denominator lets us skip offscreen
+    // cells without restarting the edge at a rounded clipping intersection.
+    inline int64 rasterizer_floor_div(int64 numerator, int64 denominator)
+    {
+        int64 quotient = numerator / denominator;
+        if(numerator % denominator < 0) --quotient;
+        return quotient;
+    }
+
+    //------------------------------------------------------------------------
+    template<class Cell>
+    void rasterizer_cells_aa<Cell>::render_hline_clipped(
+        int ey, int x1, int y1, int x2, int y2, const rect_i& clip)
+    {
+        if(y1 == y2) return;
+        int ex1 = x1 >> poly_subpixel_shift;
+        int ex2 = x2 >> poly_subpixel_shift;
+        if(ex1 >= clip.x1 && ex1 < clip.x2 &&
+           ex2 >= clip.x1 && ex2 < clip.x2)
+        {
+            set_curr_cell(ex1, ey);
+            render_hline(ey, x1, y1, x2, y2);
+            return;
+        }
+
+        int64 left = int64(clip.x1) * poly_subpixel_scale;
+        int64 right = int64(clip.x2) * poly_subpixel_scale;
+        int64 dx = int64(x2) - x1;
+        int dy = y2 - y1;
+        auto y_at = [&](int64 x) {
+            if(dx > 0)
+                return y1 + int(rasterizer_floor_div((x - x1) * dy, dx));
+            return y1 + int(rasterizer_floor_div((int64(x1) - x) * dy, -dx));
+        };
+        auto add = [&](int x, int cover, int area) {
+            if(cover || area)
+            {
+                set_curr_cell(x, ey);
+                m_curr_cell.cover += cover;
+                m_curr_cell.area += area;
+            }
+        };
+
+        // Offscreen cells still contribute winding to the visible scanline.
+        // Fold their cover onto the corresponding integer boundary, with no
+        // area inside that boundary pixel.
+        if(ex1 < clip.x1 && ex2 < clip.x1)
+        {
+            add(clip.x1, dy, 0);
+            return;
+        }
+        if(ex1 >= clip.x2 && ex2 >= clip.x2)
+        {
+            add(clip.x2, dy, 0);
+            return;
+        }
+        if(ex1 < clip.x1) add(clip.x1, y_at(left) - y1, 0);
+        if(ex2 < clip.x1) add(clip.x1, y2 - y_at(left), 0);
+        if(ex1 >= clip.x2) add(clip.x2, y_at(right) - y1, 0);
+        if(ex2 >= clip.x2) add(clip.x2, y2 - y_at(right), 0);
+
+        int first = std::max(clip.x1, std::min(ex1, ex2));
+        int last = std::min(clip.x2 - 1, std::max(ex1, ex2));
+        for(int x = first; x <= last; ++x)
+        {
+            int64 cell_x = int64(x) * poly_subpixel_scale;
+            int64 from = x == ex1 ? x1 : cell_x + (dx > 0 ? 0 : poly_subpixel_scale);
+            int64 to = x == ex2 ? x2 : cell_x + (dx > 0 ? poly_subpixel_scale : 0);
+            int cover = y_at(to) - y_at(from);
+            add(x, cover, int(from + to - 2 * cell_x) * cover);
+        }
+    }
+
+    //------------------------------------------------------------------------
+    template<class Cell>
+    void rasterizer_cells_aa<Cell>::line_clipped(
+        int x1, int y1, int x2, int y2, const rect_i& clip)
+    {
+        if(clip.x1 >= clip.x2 || clip.y1 >= clip.y2 || y1 == y2) return;
+        int ey1 = y1 >> poly_subpixel_shift;
+        int ey2 = y2 >> poly_subpixel_shift;
+        int first = std::max(clip.y1, std::min(ey1, ey2));
+        int last = std::min(clip.y2 - 1, std::max(ey1, ey2));
+        if(first > last) return;
+
+        // Use the same subdivision as line(), including its midpoint rounding.
+        // Otherwise long edges could depend on whether clipping was enabled.
+        int64 dx = int64(x2) - x1;
+        if(dx >= (16384 << poly_subpixel_shift) || dx <= -(16384 << poly_subpixel_shift))
+        {
+            if ((std::abs(x1) >= std::numeric_limits<int>::max()/2) || (std::abs(y1) >= std::numeric_limits<int>::max()/2) ||
+                (std::abs(x2) >= std::numeric_limits<int>::max()/2) || (std::abs(y2) >= std::numeric_limits<int>::max()/2))
+                return;
+            int cx = int((int64(x1) + x2) >> 1);
+            int cy = int((int64(y1) + y2) >> 1);
+            line_clipped(x1, y1, cx, cy, clip);
+            line_clipped(cx, cy, x2, y2, clip);
+            return;
+        }
+
+        m_min_x = std::min(m_min_x, std::max(clip.x1, std::min(clip.x2, std::min(x1, x2) >> poly_subpixel_shift)));
+        m_max_x = std::max(m_max_x, std::max(clip.x1, std::min(clip.x2, std::max(x1, x2) >> poly_subpixel_shift)));
+        m_min_y = std::min(m_min_y, first);
+        m_max_y = std::max(m_max_y, last);
+
+        int64 dy = int64(y2) - y1;
+        auto x_at = [&](int64 y) {
+            if(dy > 0)
+                return int(int64(x1) + rasterizer_floor_div((y - y1) * dx, dy));
+            return int(int64(x1) + rasterizer_floor_div((int64(y1) - y) * dx, -dy));
+        };
+        int incr = dy > 0 ? 1 : -1;
+        int y = dy > 0 ? first : last;
+        int end = dy > 0 ? last : first;
+        int boundary = dy > 0 ? poly_subpixel_scale : 0;
+        int64 cell_y = int64(y) * poly_subpixel_scale;
+        int64 from = y == ey1 ? y1 : cell_y + poly_subpixel_scale - boundary;
+        int from_fraction = int(from - cell_y);
+        int x_from = x_at(from);
+
+        // Jump directly to the first visible row, then retain the original
+        // division remainder while stepping through the remaining rows.
+        int64 denominator = dy > 0 ? dy : -dy;
+        int64 distance = (cell_y + boundary - y1) * incr;
+        int64 quotient = rasterizer_floor_div(distance * dx, denominator);
+        int64 remainder = distance * dx - quotient * denominator;
+        int64 x_to = int64(x1) + quotient;
+        int64 lift = rasterizer_floor_div(int64(poly_subpixel_scale) * dx, denominator);
+        int64 step_remainder = int64(poly_subpixel_scale) * dx - lift * denominator;
+        for(;;)
+        {
+            int to_fraction = y == ey2 ? (y2 & poly_subpixel_mask) : boundary;
+            if(y == ey2) x_to = x2;
+            render_hline_clipped(y, x_from, from_fraction, int(x_to), to_fraction, clip);
+            if(y == end) break;
+            y += incr;
+            x_from = int(x_to);
+            from_fraction = poly_subpixel_scale - boundary;
+            remainder += step_remainder;
+            x_to += lift;
+            if(remainder >= denominator)
+            {
+                remainder -= denominator;
+                ++x_to;
+            }
+        }
     }
 
     //------------------------------------------------------------------------

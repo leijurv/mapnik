@@ -25,6 +25,14 @@ namespace agg
         poly_max_coord = (1 << 30) - 1 //----poly_max_coord
     };
 
+    // Round coordinate ties in the same direction on both sides of zero.
+    // Quantization must commute with integer-pixel translations, including
+    // when a vertex moves between an offscreen and an onscreen position.
+    AGG_INLINE int rasterizer_round(double v)
+    {
+        return int(std::floor(v + 0.5));
+    }
+
     //------------------------------------------------------------ras_conv_int
     struct ras_conv_int
     {
@@ -35,7 +43,7 @@ namespace agg
         }
         static int xi(int v) { return v; }
         static int yi(int v) { return v; }
-        static int upscale(double v) { return iround(v * static_cast<double>(poly_subpixel_scale)); }
+        static int upscale(double v) { return rasterizer_round(v * static_cast<double>(poly_subpixel_scale)); }
         static int downscale(int v)  { return v; }
     };
 
@@ -51,7 +59,10 @@ namespace agg
         static int yi(int v) { return v; }
         static int upscale(double v)
         {
-            return saturation<poly_max_coord>::iround(v * static_cast<double>(poly_subpixel_scale));
+            v *= static_cast<double>(poly_subpixel_scale);
+            if(v < -double(poly_max_coord)) return -poly_max_coord;
+            if(v > double(poly_max_coord)) return poly_max_coord;
+            return rasterizer_round(v);
         }
         static int downscale(int v) { return v; }
     };
@@ -66,7 +77,7 @@ namespace agg
         }
         static int xi(int v) { return v * 3; }
         static int yi(int v) { return v; }
-        static int upscale(double v) { return iround(v * static_cast<double>(poly_subpixel_scale)); }
+        static int upscale(double v) { return rasterizer_round(v * static_cast<double>(poly_subpixel_scale)); }
         static int downscale(int v)  { return v; }
     };
 
@@ -78,8 +89,8 @@ namespace agg
         {
             return a * b / c;
         }
-        static int xi(double v) { return iround(v * static_cast<double>(poly_subpixel_scale)); }
-        static int yi(double v) { return iround(v * static_cast<double>(poly_subpixel_scale)); }
+        static int xi(double v) { return rasterizer_round(v * static_cast<double>(poly_subpixel_scale)); }
+        static int yi(double v) { return rasterizer_round(v * static_cast<double>(poly_subpixel_scale)); }
         static double upscale(double v) { return v; }
         static double downscale(int v)  { return v / static_cast<double>(poly_subpixel_scale); }
     };
@@ -92,8 +103,8 @@ namespace agg
         {
             return a * b / c;
         }
-        static int xi(double v) { return iround(v * static_cast<double>(poly_subpixel_scale) * 3); }
-        static int yi(double v) { return iround(v * static_cast<double>(poly_subpixel_scale)); }
+        static int xi(double v) { return rasterizer_round(v * static_cast<double>(poly_subpixel_scale) * 3); }
+        static int yi(double v) { return rasterizer_round(v * static_cast<double>(poly_subpixel_scale)); }
         static double upscale(double v) { return v; }
         static double downscale(int v)  { return v / static_cast<double>(poly_subpixel_scale); }
     };
@@ -219,6 +230,30 @@ namespace agg
                 coord_type x1 = m_x1;
                 coord_type y1 = m_y1;
                 unsigned   f1 = m_f1;
+                // An image clip rectangle lies on pixel boundaries. Preserve
+                // the original edge DDA instead of rounding new vertices at
+                // its intersections with that rectangle. Fractional clipping
+                // retains the geometric clipping semantics below.
+                if((f1 | f2) && !((f1 & 5) && (f1 & 5) == (f2 & 5)))
+                {
+                    int left = Conv::xi(m_clip_box.x1);
+                    int top = Conv::yi(m_clip_box.y1);
+                    int right = Conv::xi(m_clip_box.x2);
+                    int bottom = Conv::yi(m_clip_box.y2);
+                    if(((left | top | right | bottom) & poly_subpixel_mask) == 0)
+                    {
+                        ras.line_clipped(Conv::xi(x1), Conv::yi(y1),
+                                         Conv::xi(x2), Conv::yi(y2),
+                                         rect_i(left >> poly_subpixel_shift,
+                                                top >> poly_subpixel_shift,
+                                                right >> poly_subpixel_shift,
+                                                bottom >> poly_subpixel_shift));
+                        m_x1 = x2;
+                        m_y1 = y2;
+                        m_f1 = f2;
+                        return;
+                    }
+                }
                 coord_type y3, y4;
                 unsigned   f3, f4;
 
