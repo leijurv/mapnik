@@ -80,6 +80,7 @@ add_executable(mapnik-test-unit
     unit/renderer/cairo_io.cpp
     unit/renderer/feature_style_processor.cpp
     unit/renderer/layer_buffer.cpp
+    unit/renderer/svg_marker_cache.cpp
     unit/serialization/wkb_formats_test.cpp
     unit/serialization/wkb_test.cpp
     unit/serialization/xml_parser_trim.cpp

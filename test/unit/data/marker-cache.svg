@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+  <path d="M2 2 L29 5 L25 29 L3 26 Z" fill="#fb4567"/>
+  <path d="M6 6 L30 8 L18 30 Z" fill="#1247ab" fill-opacity=".45"/>
+  <g opacity=".61">
+    <path d="M4 4 H27 V28 H4 Z" fill="#ff5544"/>
+    <g opacity=".43">
+      <circle cx="17" cy="17" r="10" fill="#129acd"/>
+      <path d="M4 4 L27 27" stroke="#5a7c31" stroke-width="4"/>
+    </g>
+  </g>
+</svg>
